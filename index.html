@@ -183,8 +183,19 @@ function render(p) {
   } else show('<div id="status">S/N 줄을 박스에 맞추세요</div>');
 }
 /* 확정되면 인식을 멈추고 화면을 고정 → 천천히 확인하고 누르면 됨 */
+let lockedPhoto = '';
+function snapPhoto() {
+  try {
+    const vw = v.videoWidth, vh = v.videoHeight; if (!vw) return '';
+    const k = Math.min(1, 1280 / Math.max(vw, vh));
+    const c = document.createElement('canvas'); c.width = Math.round(vw * k); c.height = Math.round(vh * k);
+    c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', 0.7);
+  } catch (e) { return ''; }
+}
 function lockOn(text) {
   locked = text;
+  lockedPhoto = snapPhoto();
   $('#box').classList.add('hit');
   if (navigator.vibrate) navigator.vibrate(30);
   show(`<input id="snEdit" value="${text}" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" enterkeyhint="done" aria-label="시리얼넘버">
@@ -197,7 +208,7 @@ function unlock() {
   show('<div id="status">S/N 줄을 박스에 맞추세요</div>');
 }
 $('#res').addEventListener('click', e => {
-  if (e.target.closest('#goBtn')) record(($('#snEdit') || {}).value || locked);
+  if (e.target.closest('#goBtn')) record(($('#snEdit') || {}).value || locked, lockedPhoto);
   else if (e.target.closest('#againBtn')) unlock();
 });
 
@@ -212,17 +223,19 @@ try {
 } catch (e) {}
 let saving = false;
 try { recentList = JSON.parse(localStorage.getItem('sn.recent') || '[]'); } catch (e) { recentList = []; }
-async function record(sn) {
+async function record(sn, photo) {
   sn = String(sn || '').replace(/\s+/g, '').toUpperCase();
   if (sn.length < 3 || saving) return;
   if (!KEY) { toast('기록 키가 없어요. 받은 링크로 다시 여세요', true); return; }
   saving = true;
   if (navigator.vibrate) navigator.vibrate(40);
   toast('기록 중… ' + sn);
-  unlock(); pauseUntil = Date.now() + 1500;
+  lockedPhoto = ''; unlock(); pauseUntil = Date.now() + 1500;
   show('<div id="status">기록 중…</div>');
   try {
-    const res = await fetch(`${API}?key=${KEY}&sn=${encodeURIComponent(sn)}`);
+    const res = photo
+      ? await fetch(API, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ key: KEY, sn, img: photo }) })
+      : await fetch(`${API}?key=${KEY}&sn=${encodeURIComponent(sn)}`);
     const msg = await res.text();
     const ok = msg.startsWith('기록함');
     toast(msg, !ok || msg.includes('주의'));
@@ -241,7 +254,7 @@ function renderRecent() {
   $('#recent').innerHTML = recentList.slice(0, 2).map(r => `<li><b>${r.sn}</b><span>${r.at}${r.note ? ' · ' + r.note : ''}</span></li>`).join('');
 }
 $('#res').addEventListener('keydown', e => {
-  if (e.target.id === 'snEdit' && e.key === 'Enter') { e.preventDefault(); e.target.blur(); record(e.target.value); }
+  if (e.target.id === 'snEdit' && e.key === 'Enter') { e.preventDefault(); e.target.blur(); record(e.target.value, lockedPhoto); }
 });
 $('#manual').addEventListener('submit', e => { e.preventDefault(); const x = $('#mIn').value; $('#mIn').value = ''; $('#mIn').blur(); record(x); });
 renderRecent();
