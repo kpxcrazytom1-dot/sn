@@ -172,7 +172,7 @@ function render(p) {
   if (r.ok) { lockOn(r.text); return; }
   if (r.text) {
     const pct = Math.round(Math.min(r.n, NEED) / NEED * 100);
-    show(`<div class="chip wait">${r.text}<small>읽는 중… 그대로 들고 있어요</small><div class="bar"><i style="width:${pct}%"></i></div></div>`);
+    show(`<div class="chip wait" style="font-size:16px">읽는 중… 그대로 들고 있어요<div class="bar"><i style="width:${pct}%"></i></div></div>`);
   } else show('<div id="status">S/N 줄을 박스에 맞추세요</div>');
 }
 /* 확정되면 인식을 멈추고 화면을 고정 → 천천히 확인하고 누르면 됨 */
