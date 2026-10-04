@@ -12,14 +12,21 @@
   #stage{position:fixed;inset:0}
   video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000}
   /* 가이드 박스 바깥 어둡게 */
-  #box{position:absolute;left:6%;right:6%;top:30%;height:16%;border:2px solid var(--accent);border-radius:10px;box-shadow:0 0 0 9999px rgba(0,0,0,.55)}
+  #box{position:absolute;left:5%;right:5%;top:32%;height:11%;border:2px solid var(--accent);border-radius:10px;box-shadow:0 0 0 9999px rgba(0,0,0,.55)}
   #box.hit{border-color:#fff}
-  #hint{position:absolute;left:0;right:0;top:calc(30% - 34px);text-align:center;font-size:14px;color:var(--muted)}
+  #hint{position:absolute;left:0;right:0;top:calc(32% - 34px);text-align:center;font-size:14px;color:var(--muted)}
   #top{position:absolute;top:0;left:0;right:0;padding:calc(env(safe-area-inset-top,0px) + 10px) 14px 8px;display:flex;justify-content:space-between;align-items:center;font-size:15px;font-weight:700}
   #top small{font-weight:500;color:var(--muted);font-size:12px}
-  #res{position:absolute;left:6%;right:6%;top:calc(46% + 14px);display:flex;flex-direction:column;gap:8px;align-items:stretch}
+  #res{position:absolute;left:5%;right:5%;top:calc(43% + 14px);display:flex;flex-direction:column;gap:8px;align-items:stretch}
   .chip{border:0;border-radius:12px;padding:14px 16px;font:600 22px ui-monospace,Menlo,monospace;letter-spacing:.03em;background:var(--accent);color:#04201a;text-align:center;word-break:break-all}
-  .chip.sub{background:rgba(255,255,255,.14);color:#fff;font-size:17px;padding:10px 12px}
+  .chip.sub{background:rgba(255,255,255,.14);color:#fff}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .btn{border:0;border-radius:12px;padding:16px;font-size:18px;font-weight:700}
+  .btn.go{background:var(--accent);color:#04201a}
+  .btn.again{background:rgba(255,255,255,.16);color:#fff}
+  .chip.wait{background:rgba(255,255,255,.10);color:rgba(255,255,255,.7);pointer-events:none}
+  .bar{height:4px;border-radius:2px;background:rgba(255,255,255,.15);overflow:hidden;margin-top:8px}
+  .bar i{display:block;height:100%;background:var(--accent);transition:width .2s}
   .chip small{display:block;font:500 11px -apple-system,sans-serif;opacity:.75;letter-spacing:0;margin-top:2px}
   #status{text-align:center;font-size:13px;color:var(--muted);min-height:18px}
   #bottom{position:absolute;left:0;right:0;bottom:0;padding:10px 14px calc(env(safe-area-inset-bottom,0px) + 12px);background:linear-gradient(transparent,rgba(0,0,0,.85) 30%)}
@@ -86,7 +93,7 @@ function setStatus(m) { const s = $('#status'); if (s) s.textContent = m; }
 async function getWorker() {
   if (worker) return worker;
   worker = await Tesseract.createWorker('eng', 1);
-  await worker.setParameters({ tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-/:.', tessedit_pageseg_mode: '6' });
+  await worker.setParameters({ tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-/:.', tessedit_pageseg_mode: '7' });
   return worker;
 }
 const cv = document.createElement('canvas');
@@ -97,17 +104,19 @@ function grab() {
   const ox = (vw * sc - W) / 2, oy = (vh * sc - H) / 2;
   const b = $('#box').getBoundingClientRect(), r = v.getBoundingClientRect();
   const sx = (b.left - r.left + ox) / sc, sy = (b.top - r.top + oy) / sc, sw = b.width / sc, sh = b.height / sc;
-  const k = Math.min(2.5, 1400 / sw);
+  const k = Math.max(1, Math.min(3, 1600 / sw));
   cv.width = Math.round(sw * k); cv.height = Math.round(sh * k);
   const g = cv.getContext('2d', { willReadFrequently: true });
   g.drawImage(v, sx, sy, sw, sh, 0, 0, cv.width, cv.height);
-  // 흑백 + 대비 강화 (iOS 사파리는 canvas filter 미지원이라 직접 처리)
-  const img = g.getImageData(0, 0, cv.width, cv.height), d = img.data;
-  for (let i = 0; i < d.length; i += 4) {
-    let y = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-    y = (y - 128) * 1.6 + 128; y = y < 0 ? 0 : y > 255 ? 255 : y;
-    d[i] = d[i + 1] = d[i + 2] = y;
-  }
+  // 흑백 → Otsu 이진화 (글자/배경을 확실히 분리해서 오인식 줄임)
+  const img = g.getImageData(0, 0, cv.width, cv.height), d = img.data, n = d.length / 4;
+  const gray = new Uint8Array(n), hist = new Array(256).fill(0);
+  for (let i = 0, j = 0; j < n; i += 4, j++) { const y = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) | 0; gray[j] = y; hist[y]++; }
+  let sum = 0; for (let t = 0; t < 256; t++) sum += t * hist[t];
+  let sB = 0, wB = 0, best = 0, th = 128;
+  for (let t = 0; t < 256; t++) { wB += hist[t]; if (!wB) continue; const wF = n - wB; if (!wF) break; sB += t * hist[t];
+    const mB = sB / wB, mF = (sum - sB) / wF, v2 = wB * wF * (mB - mF) * (mB - mF); if (v2 > best) { best = v2; th = t; } }
+  for (let i = 0, j = 0; j < n; i += 4, j++) { const y = gray[j] > th ? 255 : 0; d[i] = d[i + 1] = d[i + 2] = y; }
   g.putImageData(img, 0, 0);
   return cv;
 }
@@ -122,29 +131,67 @@ function parse(text) {
 }
 async function loop() {
   if (!running) return;
-  if (document.hidden || busy) { setTimeout(loop, 400); return; }
+  if (document.hidden || busy || locked) { setTimeout(loop, 300); return; }
   busy = true;
   try {
     const w = await getWorker();
     const c = grab();
     if (c) {
       const r = await w.recognize(c);
-      render(parse(r.data.text), r.data.confidence);
+      render(parse(r.data.text));
     }
   } catch (e) { setStatus('인식 오류: ' + (e.message || e)); }
   busy = false;
-  setTimeout(loop, 250);
+  setTimeout(loop, 150);
 }
-function render(p, conf) {
-  const res = $('#res');
-  const items = [];
-  if (p.sn) items.push({ t: p.sn, main: true, label: 'S/N 표기 확인 · 터치해서 기록' });
-  p.toks.forEach(t => items.push({ t, main: !p.sn && items.length === 0, label: p.sn ? '' : '터치해서 기록' }));
-  $('#box').classList.toggle('hit', !!p.sn);
-  if (!items.length) { res.innerHTML = '<div id="status">' + (conf < 0 ? '' : 'S/N 줄을 박스에 맞추세요') + '</div>'; return; }
-  res.innerHTML = items.map(x => `<button class="chip ${x.main ? '' : 'sub'}" data-sn="${x.t}">${x.t}${x.label ? `<small>${x.label}</small>` : ''}</button>`).join('');
+/* 여러 프레임 결과를 모아 글자별 다수결 → 3번 이상 같게 읽히면 '확정' */
+const NEED = 3;
+let hist = [], locked = '', missStreak = 0, pauseUntil = 0;
+function vote(list) {
+  const byLen = {};
+  list.forEach(t => (byLen[t.length] = byLen[t.length] || []).push(t));
+  const group = Object.values(byLen).sort((a, b) => b.length - a.length)[0];
+  if (!group) return { text: '', n: 0, ok: false };
+  let out = '', ok = true;
+  for (let i = 0; i < group[0].length; i++) {
+    const c = {}; group.forEach(t => c[t[i]] = (c[t[i]] || 0) + 1);
+    const [ch, cnt] = Object.entries(c).sort((a, b) => b[1] - a[1])[0];
+    out += ch; if (cnt / group.length < 0.6) ok = false;
+  }
+  const exact = group.filter(t => t === out).length;
+  return { text: out, n: exact, ok: ok && exact >= NEED };
 }
-$('#res').addEventListener('click', e => { const b = e.target.closest('.chip'); if (b) record(b.dataset.sn); });
+let lastHTML = '';
+function show(html) { if (html !== lastHTML) { $('#res').innerHTML = html; lastHTML = html; } }
+function render(p) {
+  if (Date.now() < pauseUntil || locked) return;
+  const cand = p.sn || p.toks.slice().sort((a, b) => b.replace(/\D/g, '').length - a.replace(/\D/g, '').length)[0] || '';
+  if (cand) { hist.push(cand); if (hist.length > 7) hist.shift(); missStreak = 0; }
+  else if (++missStreak >= 4) hist = [];
+  const r = vote(hist);
+  if (r.ok) { lockOn(r.text); return; }
+  if (r.text) {
+    const pct = Math.round(Math.min(r.n, NEED) / NEED * 100);
+    show(`<div class="chip wait">${r.text}<small>읽는 중… 그대로 들고 있어요</small><div class="bar"><i style="width:${pct}%"></i></div></div>`);
+  } else show('<div id="status">S/N 줄을 박스에 맞추세요</div>');
+}
+/* 확정되면 인식을 멈추고 화면을 고정 → 천천히 확인하고 누르면 됨 */
+function lockOn(text) {
+  locked = text;
+  $('#box').classList.add('hit');
+  if (navigator.vibrate) navigator.vibrate(30);
+  show(`<div class="chip">${text}<small>확정 · 맞으면 기록을 누르세요</small></div>
+    <div class="row2"><button class="btn again" id="againBtn">다시 읽기</button><button class="btn go" id="goBtn">기록</button></div>`);
+}
+function unlock() {
+  locked = ''; hist = []; missStreak = 0;
+  $('#box').classList.remove('hit');
+  show('<div id="status">S/N 줄을 박스에 맞추세요</div>');
+}
+$('#res').addEventListener('click', e => {
+  if (e.target.closest('#goBtn')) record(locked);
+  else if (e.target.closest('#againBtn')) unlock();
+});
 
 /* ---------- 기록 ---------- */
 const API = 'https://script.google.com/macros/s/AKfycbzJv_msgD5AgbNjnTNpW6lDfFoFTmYCzDFfl_0c3uYsUn1LdZfllD4tPOxF9W5qhIFbmg/exec';
@@ -164,6 +211,8 @@ async function record(sn) {
   saving = true;
   if (navigator.vibrate) navigator.vibrate(40);
   toast('기록 중… ' + sn);
+  unlock(); pauseUntil = Date.now() + 1500;
+  show('<div id="status">기록 중…</div>');
   try {
     const res = await fetch(`${API}?key=${KEY}&sn=${encodeURIComponent(sn)}`);
     const msg = await res.text();
