@@ -12,12 +12,12 @@
   #stage{position:fixed;inset:0}
   video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000}
   /* 가이드 박스 바깥 어둡게 */
-  #box{position:absolute;left:5%;right:5%;top:32%;height:11%;border:2px solid var(--accent);border-radius:10px;box-shadow:0 0 0 9999px rgba(0,0,0,.55)}
+  #box{position:absolute;left:5%;right:5%;top:30%;height:15%;border:2px solid var(--accent);border-radius:10px;box-shadow:0 0 0 9999px rgba(0,0,0,.55)}
   #box.hit{border-color:#fff}
-  #hint{position:absolute;left:0;right:0;top:calc(32% - 34px);text-align:center;font-size:14px;color:var(--muted)}
+  #hint{position:absolute;left:0;right:0;top:calc(30% - 34px);text-align:center;font-size:14px;color:var(--muted)}
   #top{position:absolute;top:0;left:0;right:0;padding:calc(env(safe-area-inset-top,0px) + 10px) 14px 8px;display:flex;justify-content:space-between;align-items:center;font-size:15px;font-weight:700}
   #top small{font-weight:500;color:var(--muted);font-size:12px}
-  #res{position:absolute;left:5%;right:5%;top:calc(43% + 14px);display:flex;flex-direction:column;gap:8px;align-items:stretch}
+  #res{position:absolute;left:5%;right:5%;top:calc(45% + 14px);display:flex;flex-direction:column;gap:8px;align-items:stretch}
   .chip{border:0;border-radius:12px;padding:14px 16px;font:600 22px ui-monospace,Menlo,monospace;letter-spacing:.03em;background:var(--accent);color:#04201a;text-align:center;word-break:break-all}
   .chip.sub{background:rgba(255,255,255,.14);color:#fff}
   .row2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
@@ -93,7 +93,7 @@ function setStatus(m) { const s = $('#status'); if (s) s.textContent = m; }
 async function getWorker() {
   if (worker) return worker;
   worker = await Tesseract.createWorker('eng', 1);
-  await worker.setParameters({ tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-/:.', tessedit_pageseg_mode: '7' });
+  await worker.setParameters({ tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-/:.', tessedit_pageseg_mode: '6' });
   return worker;
 }
 const cv = document.createElement('canvas');
@@ -104,19 +104,24 @@ function grab() {
   const ox = (vw * sc - W) / 2, oy = (vh * sc - H) / 2;
   const b = $('#box').getBoundingClientRect(), r = v.getBoundingClientRect();
   const sx = (b.left - r.left + ox) / sc, sy = (b.top - r.top + oy) / sc, sw = b.width / sc, sh = b.height / sc;
-  const k = Math.max(1, Math.min(3, 1600 / sw));
+  const k = Math.max(1, Math.min(2.5, 1400 / sw));
   cv.width = Math.round(sw * k); cv.height = Math.round(sh * k);
   const g = cv.getContext('2d', { willReadFrequently: true });
   g.drawImage(v, sx, sy, sw, sh, 0, 0, cv.width, cv.height);
-  // 흑백 → Otsu 이진화 (글자/배경을 확실히 분리해서 오인식 줄임)
+  // 프레임마다 두 가지 보정을 번갈아 사용 (흑백+대비 / 이진화) → 다수결에 다양한 결과가 모임
   const img = g.getImageData(0, 0, cv.width, cv.height), d = img.data, n = d.length / 4;
   const gray = new Uint8Array(n), hist = new Array(256).fill(0);
   for (let i = 0, j = 0; j < n; i += 4, j++) { const y = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) | 0; gray[j] = y; hist[y]++; }
-  let sum = 0; for (let t = 0; t < 256; t++) sum += t * hist[t];
-  let sB = 0, wB = 0, best = 0, th = 128;
-  for (let t = 0; t < 256; t++) { wB += hist[t]; if (!wB) continue; const wF = n - wB; if (!wF) break; sB += t * hist[t];
-    const mB = sB / wB, mF = (sum - sB) / wF, v2 = wB * wF * (mB - mF) * (mB - mF); if (v2 > best) { best = v2; th = t; } }
-  for (let i = 0, j = 0; j < n; i += 4, j++) { const y = gray[j] > th ? 255 : 0; d[i] = d[i + 1] = d[i + 2] = y; }
+  grab.flip = !grab.flip;
+  if (grab.flip) {
+    for (let i = 0, j = 0; j < n; i += 4, j++) { let y = (gray[j] - 128) * 1.5 + 128; y = y < 0 ? 0 : y > 255 ? 255 : y; d[i] = d[i + 1] = d[i + 2] = y; }
+  } else {
+    let sum = 0; for (let t = 0; t < 256; t++) sum += t * hist[t];
+    let sB = 0, wB = 0, best = 0, th = 128;
+    for (let t = 0; t < 256; t++) { wB += hist[t]; if (!wB) continue; const wF = n - wB; if (!wF) break; sB += t * hist[t];
+      const mB = sB / wB, mF = (sum - sB) / wF, v2 = wB * wF * (mB - mF) * (mB - mF); if (v2 > best) { best = v2; th = t; } }
+    for (let i = 0, j = 0; j < n; i += 4, j++) { const y = gray[j] > th ? 255 : 0; d[i] = d[i + 1] = d[i + 2] = y; }
+  }
   g.putImageData(img, 0, 0);
   return cv;
 }
@@ -145,7 +150,7 @@ async function loop() {
   setTimeout(loop, 150);
 }
 /* 여러 프레임 결과를 모아 글자별 다수결 → 3번 이상 같게 읽히면 '확정' */
-const NEED = 3;
+const NEED = 4;
 let hist = [], locked = '', missStreak = 0, pauseUntil = 0;
 function vote(list) {
   const byLen = {};
@@ -156,18 +161,17 @@ function vote(list) {
   for (let i = 0; i < group[0].length; i++) {
     const c = {}; group.forEach(t => c[t[i]] = (c[t[i]] || 0) + 1);
     const [ch, cnt] = Object.entries(c).sort((a, b) => b[1] - a[1])[0];
-    out += ch; if (cnt / group.length < 0.6) ok = false;
+    out += ch; if (cnt / group.length < 0.5) ok = false;
   }
-  const exact = group.filter(t => t === out).length;
-  return { text: out, n: exact, ok: ok && exact >= NEED };
+  return { text: out, n: group.length, ok: ok && group.length >= NEED };
 }
 let lastHTML = '';
 function show(html) { if (html !== lastHTML) { $('#res').innerHTML = html; lastHTML = html; } }
 function render(p) {
   if (Date.now() < pauseUntil || locked) return;
   const cand = p.sn || p.toks.slice().sort((a, b) => b.replace(/\D/g, '').length - a.replace(/\D/g, '').length)[0] || '';
-  if (cand) { hist.push(cand); if (hist.length > 7) hist.shift(); missStreak = 0; }
-  else if (++missStreak >= 4) hist = [];
+  if (cand) { hist.push(cand); if (hist.length > 9) hist.shift(); missStreak = 0; }
+  else if (++missStreak >= 6) hist = [];
   const r = vote(hist);
   if (r.ok) { lockOn(r.text); return; }
   if (r.text) {
