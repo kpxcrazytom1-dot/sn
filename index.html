@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>S/N 스캐너</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<style>
+  :root{--accent:#3bb39a;--ink:#fff;--muted:#a9b4bd;--bg:#0b0f12;--warn:#f0a167}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:-apple-system,"Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;overflow:hidden}
+  #stage{position:fixed;inset:0}
+  video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000}
+  /* 가이드 박스 바깥 어둡게 */
+  #box{position:absolute;left:6%;right:6%;top:30%;height:16%;border:2px solid var(--accent);border-radius:10px;box-shadow:0 0 0 9999px rgba(0,0,0,.55)}
+  #box.hit{border-color:#fff}
+  #hint{position:absolute;left:0;right:0;top:calc(30% - 34px);text-align:center;font-size:14px;color:var(--muted)}
+  #top{position:absolute;top:0;left:0;right:0;padding:calc(env(safe-area-inset-top,0px) + 10px) 14px 8px;display:flex;justify-content:space-between;align-items:center;font-size:15px;font-weight:700}
+  #top small{font-weight:500;color:var(--muted);font-size:12px}
+  #res{position:absolute;left:6%;right:6%;top:calc(46% + 14px);display:flex;flex-direction:column;gap:8px;align-items:stretch}
+  .chip{border:0;border-radius:12px;padding:14px 16px;font:600 22px ui-monospace,Menlo,monospace;letter-spacing:.03em;background:var(--accent);color:#04201a;text-align:center;word-break:break-all}
+  .chip.sub{background:rgba(255,255,255,.14);color:#fff;font-size:17px;padding:10px 12px}
+  .chip small{display:block;font:500 11px -apple-system,sans-serif;opacity:.75;letter-spacing:0;margin-top:2px}
+  #status{text-align:center;font-size:13px;color:var(--muted);min-height:18px}
+  #bottom{position:absolute;left:0;right:0;bottom:0;padding:10px 14px calc(env(safe-area-inset-bottom,0px) + 12px);background:linear-gradient(transparent,rgba(0,0,0,.85) 30%)}
+  #recent{list-style:none;margin:0 0 8px;padding:0;max-height:22vh;overflow:auto;font:14px ui-monospace,Menlo,monospace}
+  #recent li{display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.12)}
+  #recent li span{color:var(--muted);font-size:12px;font-family:-apple-system,sans-serif}
+  #recent li button{background:none;border:1px solid rgba(255,255,255,.3);color:#fff;border-radius:6px;font-size:12px;padding:2px 8px}
+  #manual{display:flex;gap:8px}
+  #manual input{flex:1;min-width:0;font:600 16px ui-monospace,Menlo,monospace;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.08);color:#fff;text-transform:uppercase}
+  #manual button,#startBtn{border:0;border-radius:8px;padding:10px 14px;font-weight:700;background:var(--accent);color:#04201a;font-size:15px}
+  #toast{position:fixed;left:50%;top:calc(env(safe-area-inset-top,0px) + 54px);transform:translateX(-50%);background:#fff;color:#111;padding:10px 16px;border-radius:999px;font-size:15px;font-weight:600;z-index:9;max-width:92%;text-align:center}
+  #toast.dup{background:var(--warn)}
+  #startWrap{position:absolute;inset:0;display:flex;flex-direction:column;gap:12px;align-items:center;justify-content:center;background:var(--bg);padding:24px;text-align:center}
+  [hidden]{display:none!important}
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="v" playsinline muted autoplay></video>
+  <div id="top"><span>S/N 스캐너</span><small id="cnt"></small></div>
+  <div id="hint">S/N 줄을 박스 안에 가로로 맞추세요</div>
+  <div id="box"></div>
+  <div id="res"><div id="status">카메라 준비 중…</div></div>
+  <div id="bottom">
+    <ul id="recent"></ul>
+    <form id="manual" autocomplete="off"><input id="mIn" placeholder="직접 입력" autocapitalize="characters" spellcheck="false"><button>기록</button></form>
+  </div>
+  <div id="startWrap" hidden>
+    <div id="startMsg">카메라를 켜려면 아래를 누르세요</div>
+    <button id="startBtn">카메라 켜기</button>
+  </div>
+</div>
+<div id="toast" hidden></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const v = $('#v');
+let worker = null, busy = false, running = false, lastTokens = {}, recentList = [];
+
+function toast(msg, dup) {
+  const t = $('#toast'); t.textContent = msg; t.className = dup ? 'dup' : ''; t.hidden = false;
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.hidden = true, dup ? 3500 : 1800);
+}
+
+/* ---------- 카메라 ---------- */
+async function startCam() {
+  $('#startWrap').hidden = true;
+  try {
+    const st = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } } });
+    v.srcObject = st; await v.play();
+    const tr = st.getVideoTracks()[0];
+    try { const cap = tr.getCapabilities ? tr.getCapabilities() : {}; if (cap.focusMode && cap.focusMode.includes('continuous')) tr.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch (e) {}
+    running = true; setStatus('글자 인식 엔진 준비 중… (처음 한 번 몇 초)');
+    loop();
+  } catch (e) {
+    $('#startMsg').textContent = '카메라를 켤 수 없어요 (' + (e.name || e.message) + '). 브라우저 카메라 권한을 허용하고 다시 누르세요.';
+    $('#startWrap').hidden = false;
+  }
+}
+$('#startBtn').onclick = startCam;
+function setStatus(m) { const s = $('#status'); if (s) s.textContent = m; }
+
+/* ---------- 인식 ---------- */
+async function getWorker() {
+  if (worker) return worker;
+  worker = await Tesseract.createWorker('eng', 1);
+  await worker.setParameters({ tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-/:.', tessedit_pageseg_mode: '6' });
+  return worker;
+}
+const cv = document.createElement('canvas');
+function grab() {
+  const vw = v.videoWidth, vh = v.videoHeight; if (!vw) return null;
+  // 화면의 가이드 박스 위치를 영상 좌표로 변환 (object-fit: cover 보정)
+  const W = v.clientWidth, H = v.clientHeight, sc = Math.max(W / vw, H / vh);
+  const ox = (vw * sc - W) / 2, oy = (vh * sc - H) / 2;
+  const b = $('#box').getBoundingClientRect(), r = v.getBoundingClientRect();
+  const sx = (b.left - r.left + ox) / sc, sy = (b.top - r.top + oy) / sc, sw = b.width / sc, sh = b.height / sc;
+  const k = Math.min(2.5, 1400 / sw);
+  cv.width = Math.round(sw * k); cv.height = Math.round(sh * k);
+  const g = cv.getContext('2d', { willReadFrequently: true });
+  g.drawImage(v, sx, sy, sw, sh, 0, 0, cv.width, cv.height);
+  // 흑백 + 대비 강화 (iOS 사파리는 canvas filter 미지원이라 직접 처리)
+  const img = g.getImageData(0, 0, cv.width, cv.height), d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    let y = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    y = (y - 128) * 1.6 + 128; y = y < 0 ? 0 : y > 255 ? 255 : y;
+    d[i] = d[i + 1] = d[i + 2] = y;
+  }
+  g.putImageData(img, 0, 0);
+  return cv;
+}
+function parse(text) {
+  const T = String(text || '').toUpperCase();
+  let sn = '';
+  const m = T.match(/(?:S\s*[\/.\\]?\s*N|SER(?:IAL)?\.?\s*N[O0]|MFG\.?\s*N[O0])\s*[:.]?\s*([A-Z0-9][A-Z0-9\-]{4,})/);
+  if (m) sn = m[1].replace(/[-.]+$/, '');
+  const toks = (T.match(/[A-Z0-9][A-Z0-9\-]{3,}[A-Z0-9]/g) || [])
+    .filter(t => /\d/.test(t) && !/^(S\/?N|O\/?N)$/.test(t) && t !== sn);
+  return { sn, toks: [...new Set(toks)].slice(0, 3) };
+}
+async function loop() {
+  if (!running) return;
+  if (document.hidden || busy) { setTimeout(loop, 400); return; }
+  busy = true;
+  try {
+    const w = await getWorker();
+    const c = grab();
+    if (c) {
+      const r = await w.recognize(c);
+      render(parse(r.data.text), r.data.confidence);
+    }
+  } catch (e) { setStatus('인식 오류: ' + (e.message || e)); }
+  busy = false;
+  setTimeout(loop, 250);
+}
+function render(p, conf) {
+  const res = $('#res');
+  const items = [];
+  if (p.sn) items.push({ t: p.sn, main: true, label: 'S/N 표기 확인 · 터치해서 기록' });
+  p.toks.forEach(t => items.push({ t, main: !p.sn && items.length === 0, label: p.sn ? '' : '터치해서 기록' }));
+  $('#box').classList.toggle('hit', !!p.sn);
+  if (!items.length) { res.innerHTML = '<div id="status">' + (conf < 0 ? '' : 'S/N 줄을 박스에 맞추세요') + '</div>'; return; }
+  res.innerHTML = items.map(x => `<button class="chip ${x.main ? '' : 'sub'}" data-sn="${x.t}">${x.t}${x.label ? `<small>${x.label}</small>` : ''}</button>`).join('');
+}
+$('#res').addEventListener('click', e => { const b = e.target.closest('.chip'); if (b) record(b.dataset.sn); });
+
+/* ---------- 기록 ---------- */
+const API = 'https://script.google.com/macros/s/AKfycbzJv_msgD5AgbNjnTNpW6lDfFoFTmYCzDFfl_0c3uYsUn1LdZfllD4tPOxF9W5qhIFbmg/exec';
+// 비밀키는 공개 파일에 넣지 않음: 받은 링크의 #k=... 로 한 번 들어오면 이 기기에 저장
+let KEY = '';
+try {
+  const m = location.hash.match(/k=([A-Za-z0-9]+)/);
+  if (m) { localStorage.setItem('sn.key', m[1]); history.replaceState(null, '', location.pathname); }
+  KEY = localStorage.getItem('sn.key') || '';
+} catch (e) {}
+let saving = false;
+try { recentList = JSON.parse(localStorage.getItem('sn.recent') || '[]'); } catch (e) { recentList = []; }
+async function record(sn) {
+  sn = String(sn || '').trim().toUpperCase();
+  if (sn.length < 3 || saving) return;
+  if (!KEY) { toast('기록 키가 없어요. 받은 링크로 다시 여세요', true); return; }
+  saving = true;
+  if (navigator.vibrate) navigator.vibrate(40);
+  toast('기록 중… ' + sn);
+  try {
+    const res = await fetch(`${API}?key=${KEY}&sn=${encodeURIComponent(sn)}`);
+    const msg = await res.text();
+    const ok = msg.startsWith('기록함');
+    toast(msg, !ok || msg.includes('주의'));
+    if (ok) {
+      const d = new Date(), p = n => String(n).padStart(2, '0');
+      recentList.unshift({ sn, at: `${p(d.getHours())}:${p(d.getMinutes())}`, note: msg.includes('주의') ? '중복' : '' });
+      recentList = recentList.slice(0, 30);
+      try { localStorage.setItem('sn.recent', JSON.stringify(recentList)); } catch (e) {}
+      renderRecent();
+    }
+  } catch (e) { toast('기록 실패: 인터넷 연결을 확인하세요', true); }
+  saving = false;
+}
+function renderRecent() {
+  $('#cnt').textContent = recentList.length ? `최근 ${recentList.length}건` : '';
+  $('#recent').innerHTML = recentList.slice(0, 20).map(r => `<li><b>${r.sn}</b><span>${r.at}${r.note ? ' · ' + r.note : ''}</span></li>`).join('');
+}
+$('#manual').addEventListener('submit', e => { e.preventDefault(); const x = $('#mIn').value; $('#mIn').value = ''; $('#mIn').blur(); record(x); });
+renderRecent();
+startCam();
+</script>
+</body>
+</html>
